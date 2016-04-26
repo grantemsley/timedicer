@@ -51,7 +51,7 @@ for i in `ls $FOLDER/*.txt 2>/dev/null`; do
 	# it should be impossible to get non-numeric NEWID or NEWID<1001 but just in case...
 	[[ $NEWID -ge 1001 ]] || { echo "</pre></li><li>Unable to add user '$USERNAME', invalid UID/GID '$NEWID' was generated" >>$FOLDER/$USERNAME.rsp; failed_cleanup; continue; }
 	# actually create the user
-	adduser --disabled-password --uid $NEWID --gid $NEWID --gecos $USERNAME $USERNAME>>$FOLDER/$USERNAME.rsp 2>&1 || { echo "</pre></li><li>Unable to add user '$USERNAME', the command: <pre>adduser --disabled-password --gecos $USERNAME $USERNAME</pre> produced error $?</li></ul>" >>$FOLDER/$USERNAME.rsp; failed_cleanup $FOLDER/$USERNAME; continue; }
+	adduser --disabled-password --uid $NEWID --gecos $USERNAME $USERNAME>>$FOLDER/$USERNAME.rsp 2>&1 || { echo "</pre></li><li>Unable to add user '$USERNAME', the command: <pre>adduser --disabled-password --gecos $USERNAME $USERNAME</pre> produced error $?</li></ul>" >>$FOLDER/$USERNAME.rsp; failed_cleanup $FOLDER/$USERNAME; continue; }
 	echo "</pre></li>" >>$FOLDER/$USERNAME.rsp
 
 	mkdir -p /home/$USERNAME/.ssh || { echo "<li>Unable to create directory /home/$USERNAME/.ssh, the command: <pre>mkdir /home/$USERNAME/.ssh</pre> produced error $?</li>" >>$folder/$USERNAME.rsp; failed_cleanup $FOLDER/$USERNAME; continue; }
