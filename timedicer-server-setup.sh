@@ -167,6 +167,7 @@ fi
 if [ -n "$CHANGELOG" ]; then
 	[ -n "$HELP" ] && echo -n "Changelog: "
 	echo "[version indicates when: 201y.mmdd]
+6.0426:  delete any pre-existing .don files when updating key scripts
 6.0422:  internal changes
 6.0218:  no longer compulsory to supply email address on command line (except with -f)
 5.1224:  install new rdiff-backup >=0.7
@@ -231,8 +232,10 @@ fi
 docmd "Download and extract key scripts from www.timedicer.co.uk" "wget -qO /tmp/timedicer-server-setup.tar.bz2  http://www.timedicer.co.uk/server/timedicer-server-setup.tar.bz2"
 TOWEBDIR="/var/www/html"
 if [ "$YESNO" = "y" ]; then
+	# delete any old add-user files, these are a security risk [added 26Apr16]
+	find /var/www/.adduser -name "*.don" -delete
 	[ ! -e /tmp/timedicer-server-setup.tar.bz2 ] && { echo "Sorry, couldn't find downloaded key scripts, unable to continue"; exit 1; }
-	if [ "$IPADDRESSES" != "192.168.100.134" ]; then
+	if [ "$IPADDRESSES" != "192.168.100.135" ]; then
 		tar --overwrite --preserve-permissions --no-overwrite-dir -xPjf /tmp/timedicer-server-setup.tar.bz2
 		if [ $? -ne 0 ]; then echo "Error extracting: unable to continue"; exit 1; fi
 	fi
