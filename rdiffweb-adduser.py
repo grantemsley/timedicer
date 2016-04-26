@@ -7,8 +7,8 @@
 # Script will create an rdiffweb account with the specified username, and optionally a password, home directory and email address.
 # Since it uses the actual rdiffweb code, it will work no matter what database is being used.
 #
-# Copyright 2016 Grant Emsley 
-# 
+# Copyright 2016 Grant Emsley
+#
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
@@ -38,6 +38,6 @@ app.userdb.add_user(args.username, args.password)
 
 # Optionally set home directory and email address
 if args.homedir is not None:
-	app.userdb.set_user_root(args.username, args.homedir)
+        app.userdb.set_user_root(args.username, args.homedir)
 if args.email is not None:
-	app.userdb.set_email(args.username, args.email)
+        app.userdb.set_email(args.username, args.email)

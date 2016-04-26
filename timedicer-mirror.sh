@@ -489,7 +489,7 @@ if [ -z "$QUIET" ]; then
 	else
 		echo "check total and available space on destination - but ignore outcome"
 	fi
-	echo "BaseID $BASEID:\t local TimeDicer user uids ${BASEID}001-${BASEID}999"
+	echo -e "BaseID $BASEID:\t local TimeDicer user uids ${BASEID}001-${BASEID}999"
 	[[ -n $BIDIRECTIONAL ]] && echo -e "Bidirectional:\t continue if users on destination unmatched on source"
 	[ -n "$NOSNAP" ] && echo -e "Force no snap:\t backup will be from live /home not a snapshot"
 	[ -n "$COMPRESS" ] && echo -e "Compress:\t rsync compression turned on"

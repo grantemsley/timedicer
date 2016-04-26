@@ -6,6 +6,7 @@
 # this should be run each minute by crontab
 #
 # changelog:
+# 6.0426 - bugfix determining new uid/gid (bug since 6.0422, only affected BASEID>1)
 # 6.0423 - use new script (kudos: Grant Emsley) to create rdiffweb user
 # 6.0422 - fix uid and gid to be the same and to be the lowest number not in use within the 'range';
 #          but allow range to be defined (in thousands) by the last digit of either the hostname
@@ -19,7 +20,7 @@
 # 1.1009 - fix bug which rejected a new username if it was part of an existing username
 # 1.0915 - use ip on 1st network device of any type (not just eth)
 # 1.0830 - create rdiffWeb user
-VERSION="6.0423"
+VERSION="6.0426"
 failed_cleanup() {
 	rm -f $1.failed
 	mv $1.txt $1.failed
@@ -45,8 +46,8 @@ for i in `ls $FOLDER/*.txt 2>/dev/null`; do
 	#   it can be defined as the last digit in /opt/baseid, or if hostname ends in a digit it uses that digit
 	[[ -s /opt/baseid ]] && BASEID=$(cat /opt/baseid) || BASEID=$(hostname)
 	BASEID=$(echo $BASEID|tail -n1|awk '{BASEID=substr($1,length($1)); if (BASEID+0>=1) {print BASEID} else {print 1}}')
-	# check against existing uids and gids and choose the next lowest number that is available
-	NEWID=$(awk -v BASEID=$BASEID -F: '($3>=BASEID*1000+1) && ($3!=65534) {ID=$3; if ($4>ID) ID=$4; if (MAXID<ID) MAXID=ID} END {print MAXID+1}' /etc/passwd)
+	# check against existing uids and gids and choose the next lowest number that is available within the range
+	NEWID=$(awk -v BASEID=$BASEID -F: 'BEGIN {MAXID=BASEID*1000} ($3>BASEID*1000) && ($3<(BASEID+1)*1000) && ($3!=65534) {ID=$3; if ($4>ID) ID=$4; if (MAXID<ID) MAXID=ID} END {print MAXID+1}' /etc/passwd)
 	# it should be impossible to get non-numeric NEWID or NEWID<1001 but just in case...
 	[[ $NEWID -ge 1001 ]] || { echo "</pre></li><li>Unable to add user '$USERNAME', invalid UID/GID '$NEWID' was generated" >>$FOLDER/$USERNAME.rsp; failed_cleanup; continue; }
 	# actually create the user

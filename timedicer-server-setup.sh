@@ -95,15 +95,15 @@ while getopts ":cdflhvw" optname; do
 		set -e # stop on any error
 		THISN="$(basename $0 .sh)"
 		cp -au /opt/$THIS /tmp/$THIS
-		if [[ ! -s /usr/local/bin/rdiff-web-config ]]; then
-			[[ -s /opt/rdiff-web-config ]] || { echo "Unable to find /opt/rdiff-web-config, this file was part of rdiffweb 0.6.3, aborting" >&2; exit 1; }
-			cp -a /opt/rdiff-web-config /usr/local/bin
-		fi
+		#if [[ ! -s /usr/local/bin/rdiff-web-config ]]; then
+		#	[[ -s /opt/rdiff-web-config ]] || { echo "Unable to find /opt/rdiff-web-config, this file was part of rdiffweb 0.6.3, aborting" >&2; exit 1; }
+		#	cp -a /opt/rdiff-web-config /usr/local/bin
+		#fi
 		echo "Obtaining existing files from server"
 		mkdir -p /tmp/server
 		rsync -c "root@192.168.100.194:/home/z-shares/www/timedicer/htdocs/server/$THISN.*" /tmp/server 2>/dev/null || { echo "Error $?, aborting" >&2; exit 1; }
 		echo "Recreating archive file timedicer-setup-server.tar.bz2"
-		tar -cjPf /tmp/$THISN.tar.bz2 /opt/timedicer-rename-user.sh /opt/lvm-usage.sh /opt/newuser-request.sh /opt/timedicer-mirror.sh /var/www/html/processing.php /var/www/html/index.php /var/www/html/timedicer-username.bat /var/www/html/timedice.css /var/www/html/timedicer_die.png /var/www/html/timedicer_full.png /var/www/html/favicon.ico /var/www/html/robots.txt /opt/crontab-update.sh /opt/rdiffweb-install.sh /opt/make-home-lv.sh /opt/timedicer-verify.sh /opt/lvm-delete-snapshot.sh /opt/dutree.sh /opt/timedicer-bloatwatch.sh /usr/local/bin/rdiff-web-config /tmp/$THIS
+		tar -cjPf /tmp/$THISN.tar.bz2 /opt/timedicer-rename-user.sh /opt/lvm-usage.sh /opt/newuser-request.sh /opt/timedicer-mirror.sh /var/www/html/processing.php /var/www/html/index.php /var/www/html/timedicer-username.bat /var/www/html/timedice.css /var/www/html/timedicer_die.png /var/www/html/timedicer_full.png /var/www/html/favicon.ico /var/www/html/robots.txt /opt/crontab-update.sh /opt/rdiffweb-install.sh /opt/make-home-lv.sh /opt/timedicer-verify.sh /opt/lvm-delete-snapshot.sh /opt/dutree.sh /opt/timedicer-bloatwatch.sh /opt/rdiffweb-adduser.py /tmp/$THIS
 		for EXT in sh tar.bz2; do
 			diff -q /tmp/server/$THISN.$EXT /tmp/$THISN.$EXT && echo "$THISN.$EXT has not changed, server does not need to be updated" || { echo "Updating $THISN.$EXT on server"; rsync -c /tmp/$THISN.$EXT root@192.168.100.194:/home/z-shares/www/timedicer/htdocs/server/ 2>/dev/null; }
 			rm /tmp/server/$THISN.$EXT /tmp/$THISN.$EXT
