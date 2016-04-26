@@ -143,7 +143,8 @@ if [ $? -gt 0 ]; then
 	[[ $REPLY == "y" ]] || { echo "Aborted, no changes made"; exit 0; }
 else
 	echo "Checking and, if required, downloading and installing dependencies"
-	apt-get -qq install python python-cherrypy3 python-pysqlite2 libsqlite3-dev python-jinja2 python-setuptools python-babel rdiff-backup || { echo "An error occurred installing dependencies, aborting...">&2; exit 3; }
+	# sqlite3 is not needed for rdiffweb itself but is used by timedicer utilities
+	apt-get -qq install sqlite3 python python-cherrypy3 python-pysqlite2 libsqlite3-dev python-jinja2 python-setuptools python-babel rdiff-backup || { echo "An error occurred installing dependencies, aborting...">&2; exit 3; }
 fi
 [[ ! -d /etc/rdiffweb ]] && echo "Creating /etc/rdiffweb directory" && mkdir -m 755 /etc/rdiffweb
 

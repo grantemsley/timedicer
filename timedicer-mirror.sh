@@ -32,7 +32,7 @@
 # another gotcha (bug) existed in rsync --link-dest prior to 3.1.1 which could lead to wasted disk space on the
 # destination - this is a reason to use Ubuntu 14.10+ as distro, or rebuild rsync from source - see
 # http://unix.stackexchange.com/questions/193308/how-to-get-rsync-to-link-identical-files-with-link-dest-option-if-an-old-file
-VERSION="6.0425 [25 Apr 2016]"
+VERSION="6.0426 [26 Apr 2016]"
 
 function quit () {
   # exit with code $1, but first restart any suspended verification sessions
@@ -309,7 +309,9 @@ if [ -n "$CHANGELOG" ]; then
 	# changelog
 	[ -n "$HELP" ] && echo -e "Changelog:"
 	echo "\
-6.0425 [25 Apr 2016] - attempt to fix timeout error creating snapshot ('special device does not exist')
+6.0426 [26 Apr 2016] - update destination rdiffweb database in consistent way \
+for TimeDicer Server pool (kudos: Grant Elmsley)
+6.0425 [25 Apr 2016] - fix timeout error creating snapshot ('special device does not exist')
 6.0424 [24 Apr 2016] - really fix fatal error (since 6.0422)
 6.0423 [23 Apr 2016] - bugfix fatal error
 6.0422 [22 Apr 2016] - add -b switch, only mirror data for local timedicer \
@@ -813,7 +815,25 @@ for FILE in /etc/crontab /etc/rc.local; do
 done
 #copy /opt/ and rdw.db (no LVM snapshot as these will be quick anyway)
 if [[ ${REMOTEDATA[9]} == "y" ]]; then
-	SOURCES="/opt/ /etc/rdiffweb/rdw.db"
+	SOURCES="/opt/ /tmp/backup2_syncusers.sql"
+	# list of only local TimeDicer users (BASEID is normally 1), excludes primary user (uid 1000)
+	LOCALUSERS=(`awk -v BASEID=$BASEID -F: '( ($3>BASEID*1000) && ($3<(BASEID+1)*1000) ) {print $1}' /etc/passwd`)
+	# Remove temporary file if it already exists
+	rm -f /tmp/backup2_syncusers.sql
+	# Build SQL file that creates missing users, or updates their information if the username already exists
+	for i in "${LOCALUSERS[@]}"; do
+		USERINFO=(`sqlite3 /etc/rdiffweb/rdw.db <<EOF
+.mode tcl
+SELECT Username, Password, UserRoot, IsAdmin, UserEmail, RestoreFormat FROM Users WHERE Username = '$i';
+EOF
+`)
+		if [ -z "${USERINFO[0]}" ]; then
+			echo "User not found: $i"
+		else
+			echo "INSERT OR IGNORE INTO Users (Username, Password, UserRoot, IsAdmin, UserEmail, RestoreFormat) VALUES (${USERINFO[0]}, ${USERINFO[1]}, ${USERINFO[2]}, ${USERINFO[3]}, ${USERINFO[4]}, ${USERINFO[5]});" >> /tmp/backup2_syncusers.sql
+			echo "UPDATE Users SET Password = ${USERINFO[1]}, UserRoot = ${USERINFO[2]}, IsAdmin = ${USERINFO[3]}, UserEmail = ${USERINFO[4]}, RestoreFormat = ${USERINFO[5]} WHERE Username = '$i';" >> /tmp/backup2_syncusers.sql
+		fi
+	done
 else
 	SOURCES="/opt/"
 	echo -e "Warning: /etc/rdiffweb directory not found on destination\n         /etc/rdiffweb/rdw.db will not be copied!"
@@ -837,6 +857,10 @@ for SRC in $SOURCES; do
 		echo "`date +%H:%M:%S` Mirroring $SRC - skipped [not found on source]"
 	fi
 done
+if [[ ${REMOTEDATA[9]} == "y" && -s /tmp/backup2_syncusers.sql ]]; then
+	echo "`date +%H:%M:%S` Updating rdiffweb database on destination"
+	ssh $SSHOPTS root@$DESTIP 'sqlite3 /etc/rdiffweb/rdw.db </tmp/backup2_syncusers.sql'
+fi
 
 if [ -n "$FAST" ]; then	# XXY: matches fi below
 	RSYNCERR=0
@@ -1131,7 +1155,7 @@ if [ -z "$FAST" -a -z "$TEST" -a "$RSYNCERR" -eq 0 ]; then
    [ -z "$QUIET" ] && echo "  `date +%H:%M:%S` - removing destination /home/backup.old"
    rm -r /home/backup.old
   fi
-  rm /tmp/backup2_quiet' 2>/dev/null
+  rm /tmp/backup2_*' 2>/dev/null
   # end of remote execution code
   puttosleep
 else
