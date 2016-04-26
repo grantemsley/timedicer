@@ -32,7 +32,7 @@
 # another gotcha (bug) existed in rsync --link-dest prior to 3.1.1 which could lead to wasted disk space on the
 # destination - this is a reason to use Ubuntu 14.10+ as distro, or rebuild rsync from source - see
 # http://unix.stackexchange.com/questions/193308/how-to-get-rsync-to-link-identical-files-with-link-dest-option-if-an-old-file
-VERSION="6.0424 [24 Apr 2016]"
+VERSION="6.0425 [25 Apr 2016]"
 
 function quit () {
   # exit with code $1, but first restart any suspended verification sessions
@@ -309,6 +309,7 @@ if [ -n "$CHANGELOG" ]; then
 	# changelog
 	[ -n "$HELP" ] && echo -e "Changelog:"
 	echo "\
+6.0425 [25 Apr 2016] - attempt to fix timeout error creating snapshot ('special device does not exist')
 6.0424 [24 Apr 2016] - really fix fatal error (since 6.0422)
 6.0423 [23 Apr 2016] - bugfix fatal error
 6.0422 [22 Apr 2016] - add -b switch, only mirror data for local timedicer \
@@ -924,9 +925,13 @@ lvm)
 		[ -z "$QUIET" ] && echo -n "`date +%H:%M:%S` Making LVM snapshot of source $LOCALDEVICE at ${LOCALDEVICE}backup"
 		[[ -n $DEBUG ]] && echo -e "\nDoing: lvcreate -p r -L 4G -s -n ${LOCALDEVICE##*/}backup $LOCALDEVICE"
 		lvcreate -p r -L 4G -s -n ${LOCALDEVICE##*/}backup $LOCALDEVICE>/dev/null||{ echo -e "\ncouldn't create logical volume ${LOCALDEVICE}backup, aborting...">&2; puttosleep; quit 1; }
-		sleep 2s # prevent error 'special device ... does not exist' when mounting
 		[ -z "$QUIET" ] && echo -en " - ok\n`date +%H:%M:%S` Mounting source LVM snapshot at /mnt/${LOCALMNT}backup"
-		mkdir -p /mnt/${LOCALMNT}backup||{ echo -e "\ncouldn't create mountpoint, aborting...">&2; puttosleep; quit 1; }
+		for ((LOOP=1; LOOP<15; LOOP++)); do
+			mkdir -p /mnt/${LOCALMNT}backup 2>/dev/null && break
+			[[ -z $QUIET ]] && echo -n "."
+			sleep 3s # wait for snapshot to exist, might loop to prevent error 'special device ... does not exist' when mounting
+		done
+		[[ $LOOP -lt 15 ]] || { echo -e "\ncouldn't create mountpoint, aborting...">&2; puttosleep; quit 1; }
 		[[ -n $DEBUG ]] && echo -e "\nDoing: mount -o ro ${LOCALDEVICE}backup /mnt/${LOCALMNT}backup"
 		mount -o ro ${LOCALDEVICE}backup /mnt/${LOCALMNT}backup||{ echo -e "\ncouldn't mount ${LOCALDEVICE}backup at mountpoint, aborting...">&2; puttosleep; quit 1; }
 		[ -z "$QUIET" ] && echo " - ok"
