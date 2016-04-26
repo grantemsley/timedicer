@@ -32,7 +32,7 @@
 # another gotcha (bug) existed in rsync --link-dest prior to 3.1.1 which could lead to wasted disk space on the
 # destination - this is a reason to use Ubuntu 14.10+ as distro, or rebuild rsync from source - see
 # http://unix.stackexchange.com/questions/193308/how-to-get-rsync-to-link-identical-files-with-link-dest-option-if-an-old-file
-VERSION="6.0423 [23 Apr 2016]"
+VERSION="6.0424 [24 Apr 2016]"
 
 function quit () {
   # exit with code $1, but first restart any suspended verification sessions
@@ -309,6 +309,7 @@ if [ -n "$CHANGELOG" ]; then
 	# changelog
 	[ -n "$HELP" ] && echo -e "Changelog:"
 	echo "\
+6.0424 [24 Apr 2016] - really fix fatal error (since 6.0422)
 6.0423 [23 Apr 2016] - bugfix fatal error
 6.0422 [22 Apr 2016] - add -b switch, only mirror data for local timedicer \
 users based upon the source machine's BaseID
@@ -318,7 +319,7 @@ snapshot has failed and abort if it has
 directory doesn't exist
 5.1210 [10 Dec 2015] - bugfix naming of LV (kudos bug report: Alex Racov)
 5.1123 [23 Nov 2015] - increase timeout from 2 mins to 30 mins, use new \
-rsync compression (-zz), use --append-verify
+rsync compression (-zz), use --append-verify (later removed)
 5.0922 [22 Sep 2015] - fix bug identifying LV
 5.0908 [08 Sep 2015] - updated help info
 5.0813 [13 Aug 2015] - do not delete extraneous files from destination's /opt
@@ -969,8 +970,8 @@ esac
 # - that way if it fails part way then no harm is done
 
 # list of exclusions for /home subfolders that are not homes for local TimeDicer users (BASEID is normally 1)
-RSYNCEXC=( $(find /home -maxdepth 1 -mindepth 1 -type d|xargs -I {} awk -v BASEID=$BASEID -v HOMEF="{}" -F: '( ($6==HOMEF) && ($3!=1000) && ($3>=BASEID*1000) && ($3<(BASEID+1)*1000) ) {FOUND=1} END {if (FOUND!=1) printf "--exclude=\"" HOMEF "/\" "}' /etc/passwd|sed 's@="/home/@="/@g') )
-[[ -n $DEBUG ]] && echo "RSYNCEXC: ${RSYNCEXC[@]}"
+find /home -maxdepth 1 -mindepth 1 -type d|xargs -I {} awk -v BASEID=$BASEID -v HOMEF="{}" -F: '( ($6==HOMEF) && ($3!=1000) && ($3>=BASEID*1000) && ($3<(BASEID+1)*1000) ) {FOUND=1} END {if (FOUND!=1) print "- " HOMEF "/"}' /etc/passwd|sed "s@^- /home/@- /@g" >/tmp/backup2_$$_rsyncexcl.txt
+[[ -n $DEBUG ]] && echo "exclude list:" && cat /tmp/backup2_$$_rsyncexcl.txt
 for (( RSYNCLOOP=1; RSYNCLOOP<10; RSYNCLOOP++ )) do
   # in case the dest machine has gone to sleep...
   if [ $RSYNCLOOP -gt 1 ]; then
@@ -980,6 +981,7 @@ for (( RSYNCLOOP=1; RSYNCLOOP<10; RSYNCLOOP++ )) do
   RSYNCERR=99
   if [ -n "$TEST" ]; then
     RSYNCERR=0
+		[[ -n $DEBUG ]] && echo "Test mode: rsync --dry-run --rsh=\"ssh -p$SSHPORT\" $RSYNCADDOPTIONS --delete-after --link-dest=/home --exclude-from=/tmp/backup2_$$_rsyncexcl.txt -vv --info=skip4 $BACKUPFROM/ root@$DESTIP:/home/backup" && rsync --dry-run --rsh="ssh -p$SSHPORT" $RSYNCADDOPTIONS --delete-after --link-dest=/home --exclude-from=/tmp/backup2_$$_rsyncexcl.txt -vv --info=skip4 $BACKUPFROM/ root@$DESTIP:/home/backup 2>&1|tee "/tmp/backup2_rsync.txt"
   elif [ -z "$VERBOSE" ]; then
     # AX options removed 7Oct10 because of rsync error messages:
     #   rsync: get_acl: sys_acl_get_file("path/filename", ACL_TYPE_ACCESS): No such file or directory (2)
@@ -989,7 +991,7 @@ for (( RSYNCLOOP=1; RSYNCLOOP<10; RSYNCLOOP++ )) do
 		# don't use --delete-during because it may make changes to dest before completion of backup operation,
 		# whereas we want to delay any changes (using --link-dest) until backup has completed successfully
 		# however this requires us to use --delete-after which is slower...
-    rsync --rsh="ssh -p$SSHPORT" $RSYNCADDOPTIONS --delete-after --link-dest=/home ${RSYNCEXC[@]} $BACKUPFROM/ root@$DESTIP:/home/backup 1>"/tmp/backup2_rsync.txt" 2>&1
+    rsync --rsh="ssh -p$SSHPORT" $RSYNCADDOPTIONS --delete-after --link-dest=/home --exclude-from=/tmp/backup2_$$_rsyncexcl.txt $BACKUPFROM/ root@$DESTIP:/home/backup 1>"/tmp/backup2_rsync.txt" 2>&1
     RSYNCERR=$?
   else	# verbose or active
     echo -e "\nStarted transfer,File length bytes,Transferred bytes,Path and filename"
@@ -997,7 +999,7 @@ for (( RSYNCLOOP=1; RSYNCLOOP<10; RSYNCLOOP++ )) do
     #(which is kinda self-defeating)
     #rsync --partial -AX $RSYNCADDOPTIONS --link-dest=/home --exclude=lost+found/*** --exclude=backup/*** --exclude=backup.old/*** /mnt/${LOCALMNT}backup/ root@$DESTIP:/home/backup 2>>/tmp/backup2_rsync.txt|sed 's/^[0-9/]*/ /;s/:/ /'
     #this is less neat but gives progress bar:
-    rsync --rsh="ssh -p$SSHPORT" $RSYNCADDOPTIONS --delete-after --link-dest=/home ${RSYNCEXC[@]} $BACKUPFROM/ root@$DESTIP:/home/backup 2>&1|tee "/tmp/backup2_rsync.txt"
+    rsync --rsh="ssh -p$SSHPORT" $RSYNCADDOPTIONS --delete-after --link-dest=/home --exclude-from=/tmp/backup2_$$_rsyncexcl.txt $BACKUPFROM/ root@$DESTIP:/home/backup 2>&1|tee "/tmp/backup2_rsync.txt"
     RSYNCERR="${PIPESTATUS[0]}"
   fi
   [ $RSYNCERR -eq 0 -o $RSYNCLOOP -gt 9 ] && break
@@ -1091,27 +1093,28 @@ if [ -z "$FAST" -a -z "$TEST" -a "$RSYNCERR" -eq 0 ]; then
  # complete - this might well mean the ssh connection was broken, not that
  # there was a problem at the remote end
  ssh $SSHOPTS root@$DESTIP 'read QUIET</tmp/backup2_quiet
+	[[ ! -d /home/backup/backup ]] || { echo "Error: /home/backup/backup exists on destination - ls /home/backup is:"; ls /home/backup; echo "Will not attempt to update folders on destination"; exit; }
   mkdir -p /home/backup.old
-  for i in /home/backup/*; do \
+  for i in $(find /home/backup -maxdepth 1 -mindepth 1 -type d -not -iname backup); do \
   [ -z "$QUIET" ] && echo "  `date +%H:%M:%S` - `basename $i`"
-  if [ -e "/home/`basename $i`" ]; then
+  if [[ -d "/home/`basename $i`" ]]; then
    mv "/home/`basename $i`" "/home/backup.old/`basename $i`"
   else
    mkdir -p "/home/backup.old/`basename $i`" # to pass next test
   fi
-  if [ -e "/home/backup.old/`basename $i`" ]; then
+  if [[ -d "/home/backup.old/`basename $i`" && ! -d "/home/`basename $i`" ]]; then
    mv $i "/home/`basename $i`"
-   if [ -e "/home/`basename $i`" ]; then
+   if [[ -d "/home/`basename $i`" ]]; then
     rm -r "/home/backup.old/`basename $i`"
     if [ -e "/home/backup.old/`basename $i`" ]; then
-     echo A problem occurred deleting /home/backup.old/`basename $i`
+     echo A problem occurred deleting /home/backup.old/`basename $i`; break
     fi
    else
-    echo A problem occurred moving new $i to /home/`basename $i`
+    echo A problem occurred moving new $i to /home/`basename $i`; break
    fi
   else
    echo A problem occurred moving old /home/`basename $i` to \
-   /home/backup.old/`basename $i`
+   /home/backup.old/`basename $i`; break
   fi
   done
   # tidy up by removing backup folders unless non-empty
