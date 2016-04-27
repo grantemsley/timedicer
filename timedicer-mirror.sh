@@ -32,7 +32,7 @@
 # another gotcha (bug) existed in rsync --link-dest prior to 3.1.1 which could lead to wasted disk space on the
 # destination - this is a reason to use Ubuntu 14.10+ as distro, or rebuild rsync from source - see
 # http://unix.stackexchange.com/questions/193308/how-to-get-rsync-to-link-identical-files-with-link-dest-option-if-an-old-file
-VERSION="6.0426 [26 Apr 2016]"
+VERSION="6.0427 [27 Apr 2016]"
 
 function quit () {
   # exit with code $1, but first restart any suspended verification sessions
@@ -153,10 +153,10 @@ SSHPORT=22
 WAKEPORT=9
 NOSLEEP="y"
 
-while getopts ":abcdefhik:lm:nop:qrstuvwz" optname; do
+while getopts ":acdefhik:lm:nop:qrstuvwz" optname; do
   case "$optname" in
     "a") 	RSYNCADDOPTIONS="--progress --out-format=%t_%l_%b_%n $RSYNCADDOPTIONS"; VERBOSE="-v"; ACTIVE="y";;
-    "b")	BIDIRECTIONAL="y";;
+#    "b")	BIDIRECTIONAL="y";;
     "c")	RSYNCADDOPTIONS="-c $RSYNCADDOPTIONS";CHECKSUM="y";;
     "d")	DEBUG="y";;
     "e")	NOSNAP="y";;
@@ -227,9 +227,6 @@ Example: sudo /opt/$THIS -v 192.168.100.130
 
 Options:
   -a: active progress mode - shows file transfer progress, implies verbose
-  -b: permit bidirectional backup (i.e. don't abort if there are users \
-already on destination that don't exist on source, as long as there are \
-no name/uid/gid conflicts)
   -c: determine if file backup is needed by checksum rather than \
 comparing file date, time & size, and also compare usage of /home on source \
 and destination (much slower)
@@ -254,7 +251,7 @@ also -o)
   -u: use pre-existing mounted source snapshot (e.g. as left behind after \
 a previous incomplete run of $THIS)
   -v: verbose mode
-  -z: use compression when transferring files (-zz is used if rsync version >=3.1.1)
+  -z: use compression when transferring files (rsync -zz is used if rsync version >=3.1.1)
 
 Details: Before $THIS can work, you must have added the root public key of \
 source machine (/root/.ssh/id_rsa.pub) to destination machine in \
@@ -309,8 +306,11 @@ if [ -n "$CHANGELOG" ]; then
 	# changelog
 	[ -n "$HELP" ] && echo -e "Changelog:"
 	echo "\
+6.0427 [27 Apr 2016] - make source/destination user-checking compatible with \
+TimeDicer Server Pool concept, remove redundant -b option
 6.0426 [26 Apr 2016] - update destination rdiffweb database in consistent way \
-for TimeDicer Server pool (kudos: Grant Elmsley)
+for TimeDicer Server Pool (kudos: Grant Emsley), also allocate 80% of free VG \
+space for snapshot instead of fixed 4 Gibibytes
 6.0425 [25 Apr 2016] - fix timeout error creating snapshot ('special device does not exist')
 6.0424 [24 Apr 2016] - really fix fatal error (since 6.0422)
 6.0423 [23 Apr 2016] - bugfix fatal error
@@ -718,14 +718,12 @@ fi # matches with 'if [ -z "$FAST" ]; then # line XXX - see matching fi below' a
 # same uid and same gid as on source
 [ -z "$QUIET" ] && echo -e "`date +%H:%M:%S` Comparing source and destination users/groups"
 
-#identify primary user's home here - normally will just be the primary user's name preceded by slash
-PRIMARYUSER_HOME=`grep 1000 /etc/passwd|awk -F : '{print $6}'|sed 's@^/home@@'`
-#identify users here
-awk -F: '($3>=1001) && ($3!=65534) {print $1 ":" $3 ":" $4}' /etc/passwd|sort -t: -k2 >/tmp/backup2_users1.txt
-#identify users on BACKUP2
+## list of only local TimeDicer users (BASEID is normally 1), excludes primary user (uid 1000)
+awk -v BASEID=$BASEID -F: '( ($3>BASEID*1000) && ($3<(BASEID+1)*1000) ) {print $1 ":" $3 ":" $4}' /etc/passwd|sort -t: -k2 >/tmp/backup2_users1.txt
+#identify all TimeDicer users on BACKUP2
 rm -f /tmp/backup2_err.txt /tmp/backup2_users2.txt
 [ -n "$DEBUG" ] && echo "Debug mode: stage 14"
-ssh $SSHOPTS root@$DESTIP cat /etc/passwd 2>/dev/null | awk -F: '($3>=1001) && ($3!=65534) {print $1 ":" $3 ":" $4}'|sort -t: -k2 >/tmp/backup2_users2.txt 2>/tmp/backup2_err.txt
+ssh $SSHOPTS root@$DESTIP cat /etc/passwd | awk -F: '($3>1000) && ($3!=65534) {print $1 ":" $3 ":" $4}'|sort -t: -k2 >/tmp/backup2_users2.txt 2>/tmp/backup2_err.txt
 [ -n "$DEBUG" ] && echo "Debug mode: stage 15"
 
 if [ -s /tmp/backup2_err.txt -o ! -f /tmp/backup2_users2.txt ]; then
@@ -733,20 +731,25 @@ if [ -s /tmp/backup2_err.txt -o ! -f /tmp/backup2_users2.txt ]; then
 	cat /tmp/backup2_err.txt>&2
 	quit 2
 fi
-
-# show any users on destination whose name/id is not matched on source
-for PREEXISTINGUSER in $(diff --suppress-common-lines /tmp/backup2_users1.txt /tmp/backup2_users2.txt|awk '($1==">") && ($2!="") {print $2}'); do
-	if [[ -z $BIDIRECTIONAL ]]; then
-		let ERRED++
-		echo "Fatal Error: user $PREEXISTINGUSER exists on destination and is not matched on source" >&2
-	else
-		echo "Note: user $PREEXISTINGUSER exists on destination and is not matched on source"
-	fi
-done
-[ -z "$ERRED" ] || { echo "Aborting..."; puttosleep; quit 1; }
-
 #create list of users found here but missing on BACKUP2
 diff --suppress-common-lines /tmp/backup2_users1.txt /tmp/backup2_users2.txt|awk '($1=="<") && ($2!="") {print $2}'>/tmp/backup2_usersnew.txt
+diff --suppress-common-lines /tmp/backup2_users1.txt /tmp/backup2_users2.txt|awk '($1==">") && ($2!="") {print $2}'>/tmp/backup2_userspre.txt
+#[[ -n $DEBUG ]] && echo "Debug: created /tmp/backup2_users*.txt, stopping" && exit 0
+# show any users on destination whose name and uid and gid are not fully matched on source
+while read PREEXISTINGUSER; do
+	#pick up name[0], uid[1] and gid[2] of the user on destination
+	RUSER=( $(grep "^$PREEXISTINGUSER" /tmp/backup2_users2.txt | awk -F: '{print $1,$2,$3}' ) )
+	[[ -n $DEBUG ]] && echo "Checking user on destination (user uid gid): ${RUSER[@]}"
+	if [[ ${RUSER[1]} -le $(($BASEID*1000)) || ${RUSER[1]} -gt $(($BASEID*1000+999)) ]]; then
+		# this user is in a different BaseID, this is ok as long as the name doesn't conflict
+		grep "^${RUSER[0]}:" /tmp/backup2_users1.txt >/dev/null && echo "Fatal Error: user ${RUSER[0]} exists on both source and destination but with different uids" >&2 && let ERRED++
+	else
+		let ERRED++
+		echo "Fatal Error: user ${RUSER[0]} already exists on destination, uid ${RUSER[1]}, but is not matched on source" >&2
+	fi
+done </tmp/backup2_userspre.txt
+[ -z "$ERRED" ] || { echo "Aborting..."; puttosleep; quit 1; }
+
 if [ -s /tmp/backup2_usersnew.txt ]; then
 	# check that none of these new users already exist on dest with different uid/gid
 	cut -f1 -d: /tmp/backup2_usersnew.txt|xargs -I{} grep "^{}:" /tmp/backup2_users2.txt >/tmp/backup2_userswrongid.txt
@@ -828,7 +831,7 @@ SELECT Username, Password, UserRoot, IsAdmin, UserEmail, RestoreFormat FROM User
 EOF
 `)
 		if [ -z "${USERINFO[0]}" ]; then
-			echo "User not found: $i"
+			echo "         rdiffweb user not found: $i"
 		else
 			echo "INSERT OR IGNORE INTO Users (Username, Password, UserRoot, IsAdmin, UserEmail, RestoreFormat) VALUES (${USERINFO[0]}, ${USERINFO[1]}, ${USERINFO[2]}, ${USERINFO[3]}, ${USERINFO[4]}, ${USERINFO[5]});" >> /tmp/backup2_syncusers.sql
 			echo "UPDATE Users SET Password = ${USERINFO[1]}, UserRoot = ${USERINFO[2]}, IsAdmin = ${USERINFO[3]}, UserEmail = ${USERINFO[4]}, RestoreFormat = ${USERINFO[5]} WHERE Username = '$i';" >> /tmp/backup2_syncusers.sql
@@ -857,259 +860,250 @@ for SRC in $SOURCES; do
 		echo "`date +%H:%M:%S` Mirroring $SRC - skipped [not found on source]"
 	fi
 done
-if [[ ${REMOTEDATA[9]} == "y" && -s /tmp/backup2_syncusers.sql ]]; then
+if [[ -z $TEST && ${REMOTEDATA[9]} == "y" && -s /tmp/backup2_syncusers.sql ]]; then
 	echo "`date +%H:%M:%S` Updating rdiffweb database on destination"
 	ssh $SSHOPTS root@$DESTIP 'sqlite3 /etc/rdiffweb/rdw.db </tmp/backup2_syncusers.sql'
 fi
-
+[[ -n $DEBUG ]] && echo "Debug: stage 73"
 if [ -n "$FAST" ]; then	# XXY: matches fi below
 	RSYNCERR=0
 else
+	[ -z "$QUIET" ] && echo "`date +%H:%M:%S` Preparing destination /home/backup"
+	# plant $QUIET var so it can be accessed on remote machine (quotes not apostrophes so variable can be passed)
+	# run remote code to create remote /home/backup and report if already present and non-empty
+	ssh $SSHOPTS root@$DESTIP "echo $QUIET>/tmp/backup2_quiet;"'read QUIET</tmp/backup2_quiet
+ 	ERRNO=$?
+ 	mkdir -p /home/backup|| let ERRNO++
+ 	[ -z "$QUIET`find /home/backup -maxdepth 0 -empty`" ] && echo "`date +%H:%M:%S` Note: existing non-empty destination /home/backup (probably the previous run failed)"
+ 	exit $ERRNO
+	' 2>/dev/null
+	ERRNO=$?
+	[[ -n $DEBUG ]] && echo "Debug: stage 74"
 
-# implement re-gzipping of newly-gzipped files so that they are rsyncable
-# ... but not needed because rdiff-backup's gz files are never changed once created
-#if [[ -s /var/log/$THIS.log ]]; then
-#	# pick up the time (formatted as required for touch) for the last successful run to this destination
-#	LASTSUCCESS=$(tac /var/log/$THIS.log|grep ",${DESTIP}$"|awk -F, '{print $2}')
-#	if [[ -n $LASTSUCCESS ]]; then
-#		touch -t $LASTSUCCESS /tmp/backup2_timematch.tmp
-#		echo "Listing gz files modified since the last time $THIS was run to $DESTIP:"
-#		find /home -type f -name "*.gz" -newer /tmp/backup2_timematch.tmp -ls
-#	fi
-#fi
-
-[ -z "$QUIET" ] && echo "`date +%H:%M:%S` Preparing destination /home/backup"
-# plant $QUIET var so it can be accessed on remote machine (quotes not apostrophes so variable can be passed)
-# run remote code to create remote /home/backup and report if already present and non-empty
-ssh $SSHOPTS root@$DESTIP "echo $QUIET>/tmp/backup2_quiet;"'read QUIET</tmp/backup2_quiet
- ERRNO=$?
- mkdir -p /home/backup|| let ERRNO++
- [ -z "$QUIET`find /home/backup -maxdepth 0 -empty`" ] && echo "`date +%H:%M:%S` Note: existing non-empty destination /home/backup (probably the previous run failed)"
- exit $ERRNO
-' 2>/dev/null
-ERRNO=$?
-# if an error has been recorded on the remote machine, or ssh failed, abort
-if [ $ERRNO -ne 0 ]; then
- [ -n "$DEBUG" ] && echo -e " ERRNO is '$ERRNO'"
- echo -e "`date +%H:%M:%S` Fatal error preparing destination $DESTIP:/home/backup, aborting...">&2
- puttosleep
- quit 1
-fi
-
-# Set up the source (snapshot)
-case $SNAPTYPE in
-lvm)
-	if [ `echo $LOCALDEVICE|awk -F/ '{print NF}'` != 4 ]; then
-		# lv should be in the form /dev/xx/$LOCALMNT
-		echo -e "`date +%H:%M:%S` couldn't identify '$LOCALMNT' volume name (found '$LOCALDEVICE')\nLV Name line is: '`lvdisplay 2>/dev/null|grep "^  LV Name.*$LOCALMNT$"`'\naborting...">&2
-		puttosleep
-		quit 1
+	# if an error has been recorded on the remote machine, or ssh failed, abort
+	if [ $ERRNO -ne 0 ]; then
+ 	[ -n "$DEBUG" ] && echo -e " ERRNO is '$ERRNO'"
+ 	echo -e "`date +%H:%M:%S` Fatal error preparing destination $DESTIP:/home/backup, aborting...">&2
+ 	puttosleep
+ 	quit 1
 	fi
-	# remove any pre-existing mount ${LOCALDEVICE}backup
-	if [ -n "`cat /etc/mtab|grep /mnt/${LOCALMNT}backup`" -a -z "$USEEXISTINGSNAPSHOT" ]; then
-		if [ -z "$QUIET" ]; then echo "`date +%H:%M:%S` Removing existing source mount /mnt/${LOCALMNT}backup"; fi
-		umount ${LOCALDEVICE}backup
-		if [ $? -gt 0 ]; then
-			umount -l ${LOCALDEVICE}backup||{ echo -e "\n`date +%H:%M:%S` Unable to umount pre-existing ${LOCALDEVICE}backup, aborting...">&2; [ -z "$TEST" ] && puttosleep; quit 1; }
-			sleep 5
-		fi
-	fi
-	# remove any pre-existing snapshot ${LOCALDEVICE}backup
-	COUNTEXISTINGSNAPSHOTS=`lvs --noheadings ${LOCALDEVICE}backup 2>/dev/null|wc -l`
-	if [ $COUNTEXISTINGSNAPSHOTS -gt 0 -a -z "$USEEXISTINGSNAPSHOT" ]; then
-		[ -z "$QUIET" ] && echo -n "`date +%H:%M:%S` Removing existing source LV ${LOCALDEVICE}backup"
-		for ((LVREMOVELOOP=1; LVREMOVELOOP<11; LVREMOVELOOP++)); do
-			[ $LVREMOVELOOP -gt 1 ] && sleep 30
-			lvremove -f ${LOCALDEVICE}backup >/dev/null && break
-			dmsetup remove -f ${LOCALDEVICE}backup >/dev/null || lvchange -an ${LOCALDEVICE}backup >/dev/null
-			[ -z "$QUIET" ] && echo -n "."
-		done
-		if [ $LVREMOVELOOP -eq 11 ]; then
-			[ -z "$QUIET" ] && echo " - failed"
-			echo " `date +%H:%M:%S` Unable to remove LV ${LOCALDEVICE}backup. Aborting" >&2
+	[[ -n $DEBUG ]] && echo "Debug: stage 75"
+
+	# Set up the source (snapshot)
+	case $SNAPTYPE in
+	lvm)
+		if [ `echo $LOCALDEVICE|awk -F/ '{print NF}'` != 4 ]; then
+			# lv should be in the form /dev/xx/$LOCALMNT
+			echo -e "`date +%H:%M:%S` couldn't identify '$LOCALMNT' volume name (found '$LOCALDEVICE')\nLV Name line is: '`lvdisplay 2>/dev/null|grep "^  LV Name.*$LOCALMNT$"`'\naborting...">&2
 			puttosleep
 			quit 1
 		fi
-		[ -z "$QUIET" ] && echo " - ok"
-	elif [ -n "$USEEXISTINGSNAPSHOT" ]; then
-		if [ $COUNTEXISTINGSNAPSHOTS -gt 0  ]; then
-			if [ -z "$(df /mnt/${LOCALMNT}backup|awk '{if (NR==2) print $1}')" ]; then
-				echo "`date +%H:%M:%S` Data not found at /mnt/${LOCALMNT}backup. Aborting" >&2
+		# remove any pre-existing mount ${LOCALDEVICE}backup
+		if [ -n "`cat /etc/mtab|grep /mnt/${LOCALMNT}backup`" -a -z "$USEEXISTINGSNAPSHOT" ]; then
+			if [ -z "$QUIET" ]; then echo "`date +%H:%M:%S` Removing existing source mount /mnt/${LOCALMNT}backup"; fi
+			umount ${LOCALDEVICE}backup
+			if [ $? -gt 0 ]; then
+				umount -l ${LOCALDEVICE}backup||{ echo -e "\n`date +%H:%M:%S` Unable to umount pre-existing ${LOCALDEVICE}backup, aborting...">&2; [ -z "$TEST" ] && puttosleep; quit 1; }
+				sleep 5
+			fi
+		fi
+		# remove any pre-existing snapshot ${LOCALDEVICE}backup
+		COUNTEXISTINGSNAPSHOTS=`lvs --noheadings ${LOCALDEVICE}backup 2>/dev/null|wc -l`
+		if [ $COUNTEXISTINGSNAPSHOTS -gt 0 -a -z "$USEEXISTINGSNAPSHOT" ]; then
+			[ -z "$QUIET" ] && echo -n "`date +%H:%M:%S` Removing existing source LV ${LOCALDEVICE}backup"
+			for ((LVREMOVELOOP=1; LVREMOVELOOP<11; LVREMOVELOOP++)); do
+				[ $LVREMOVELOOP -gt 1 ] && sleep 30
+				lvremove -f ${LOCALDEVICE}backup >/dev/null && break
+				dmsetup remove -f ${LOCALDEVICE}backup >/dev/null || lvchange -an ${LOCALDEVICE}backup >/dev/null
+				[ -z "$QUIET" ] && echo -n "."
+			done
+			if [ $LVREMOVELOOP -eq 11 ]; then
+				[ -z "$QUIET" ] && echo " - failed"
+				echo " `date +%H:%M:%S` Unable to remove LV ${LOCALDEVICE}backup. Aborting" >&2
 				puttosleep
 				quit 1
 			fi
-			echo "`date +%H:%M:%S` Using existing source LV ${LOCALDEVICE}backup"
+			[ -z "$QUIET" ] && echo " - ok"
+		elif [ -n "$USEEXISTINGSNAPSHOT" ]; then
+			if [ $COUNTEXISTINGSNAPSHOTS -gt 0  ]; then
+				if [ -z "$(df /mnt/${LOCALMNT}backup|awk '{if (NR==2) print $1}')" ]; then
+					echo "`date +%H:%M:%S` Data not found at /mnt/${LOCALMNT}backup. Aborting" >&2
+					puttosleep
+					quit 1
+				fi
+				echo "`date +%H:%M:%S` Using existing source LV ${LOCALDEVICE}backup"
+			else
+				echo "`date +%H:%M:%S` Unable to locate existing source LV ${LOCALDEVICE}backup. Aborting" >&2
+				puttosleep
+				quit 1
+			fi
+		fi
+		if [ -z "$USEEXISTINGSNAPSHOT" ]; then
+			[ -z "$QUIET" ] && echo -n "`date +%H:%M:%S` Making LVM snapshot of source $LOCALDEVICE at ${LOCALDEVICE}backup"
+			# we will use 80% of free VG space for the snapshot
+			FREEG=$(vgs --noheadings --units=b -o vg_free|awk -F"[ B]" '{print int(0.8*$(NF-1)/1024^3)}')
+			[[ -n $DEBUG ]] && echo -e "\nDoing: lvcreate -p r -L ${FREEG}G -s -n ${LOCALDEVICE##*/}backup $LOCALDEVICE"
+			lvcreate -p r -L ${FREEG}G -s -n ${LOCALDEVICE##*/}backup $LOCALDEVICE>/dev/null||{ echo -e "\ncouldn't create logical volume ${LOCALDEVICE}backup, aborting...">&2; puttosleep; quit 1; }
+			[ -z "$QUIET" ] && echo -en " - ok\n`date +%H:%M:%S` Mounting source LVM snapshot at /mnt/${LOCALMNT}backup"
+			for ((LOOP=1; LOOP<15; LOOP++)); do
+				mkdir -p /mnt/${LOCALMNT}backup 2>/dev/null && break
+				[[ -z $QUIET ]] && echo -n "."
+				sleep 3s # wait for snapshot to exist, might loop to prevent error 'special device ... does not exist' when mounting
+			done
+			[[ $LOOP -lt 15 ]] || { echo -e "\ncouldn't create mountpoint, aborting...">&2; puttosleep; quit 1; }
+			[[ -n $DEBUG ]] && echo -e "\nDoing: mount -o ro ${LOCALDEVICE}backup /mnt/${LOCALMNT}backup"
+			mount -o ro ${LOCALDEVICE}backup /mnt/${LOCALMNT}backup||{ echo -e "\ncouldn't mount ${LOCALDEVICE}backup at mountpoint, aborting...">&2; puttosleep; quit 1; }
+			[ -z "$QUIET" ] && echo " - ok"
+		fi
+		if [ "$LOCALMNT" = "home" ]; then
+			BACKUPFROM=/mnt/homebackup
 		else
-			echo "`date +%H:%M:%S` Unable to locate existing source LV ${LOCALDEVICE}backup. Aborting" >&2
-			puttosleep
-			quit 1
+			BACKUPFROM=/mnt/${LOCALMNT}backup/home
 		fi
-	fi
-	if [ -z "$USEEXISTINGSNAPSHOT" ]; then
-		[ -z "$QUIET" ] && echo -n "`date +%H:%M:%S` Making LVM snapshot of source $LOCALDEVICE at ${LOCALDEVICE}backup"
-		[[ -n $DEBUG ]] && echo -e "\nDoing: lvcreate -p r -L 4G -s -n ${LOCALDEVICE##*/}backup $LOCALDEVICE"
-		lvcreate -p r -L 4G -s -n ${LOCALDEVICE##*/}backup $LOCALDEVICE>/dev/null||{ echo -e "\ncouldn't create logical volume ${LOCALDEVICE}backup, aborting...">&2; puttosleep; quit 1; }
-		[ -z "$QUIET" ] && echo -en " - ok\n`date +%H:%M:%S` Mounting source LVM snapshot at /mnt/${LOCALMNT}backup"
-		for ((LOOP=1; LOOP<15; LOOP++)); do
-			mkdir -p /mnt/${LOCALMNT}backup 2>/dev/null && break
-			[[ -z $QUIET ]] && echo -n "."
-			sleep 3s # wait for snapshot to exist, might loop to prevent error 'special device ... does not exist' when mounting
-		done
-		[[ $LOOP -lt 15 ]] || { echo -e "\ncouldn't create mountpoint, aborting...">&2; puttosleep; quit 1; }
-		[[ -n $DEBUG ]] && echo -e "\nDoing: mount -o ro ${LOCALDEVICE}backup /mnt/${LOCALMNT}backup"
-		mount -o ro ${LOCALDEVICE}backup /mnt/${LOCALMNT}backup||{ echo -e "\ncouldn't mount ${LOCALDEVICE}backup at mountpoint, aborting...">&2; puttosleep; quit 1; }
-		[ -z "$QUIET" ] && echo " - ok"
-	fi
-	if [ "$LOCALMNT" = "home" ]; then
-		BACKUPFROM=/mnt/homebackup
-	else
-		BACKUPFROM=/mnt/${LOCALMNT}backup/home
-	fi
-	;;
-btrfs)
-	BACKUPFROM=/$LOCALMNT/timedicer-mirror-snapshot
-	# check for existence of snapshot
-	btrfs subvolume show $BACKUPFROM >/dev/null 2>&1; SNAPSHOTEXISTS=$?
-	if [ -n "$USEEXISTINGSNAPSHOT" ]; then
-		if [ $SNAPSHOTEXISTS -eq 0 ]; then
-			echo "`date +%H:%M:%S` Unable to locate existing $SNAPTYPE snapshot $BACKUPFROM, aborting" >&2
-			puttosleep
-			quit 1
+		;;
+	btrfs)
+		BACKUPFROM=/$LOCALMNT/timedicer-mirror-snapshot
+		# check for existence of snapshot
+		btrfs subvolume show $BACKUPFROM >/dev/null 2>&1; SNAPSHOTEXISTS=$?
+		if [ -n "$USEEXISTINGSNAPSHOT" ]; then
+			if [ $SNAPSHOTEXISTS -eq 0 ]; then
+				echo "`date +%H:%M:%S` Unable to locate existing $SNAPTYPE snapshot $BACKUPFROM, aborting" >&2
+				puttosleep
+				quit 1
+			fi
+		else
+			if [  $SNAPSHOTEXISTS -eq 0 ]; then
+				[ -z "$QUIET" ] && echo "`date +%H:%M:%S` Deleting existing $SNAPTYPE snapshot $BACKUPFROM"
+				btrfs subvolume delete "$BACKUPFROM" >/dev/null || { echo "`date +%H:%M:%S`  Unable to remove $SNAPTYPE snapshot $BACKUPFROM, aborting" >&2; puttosleep; quit 1; }
+			fi
+			[ -z "$QUIET" ] && echo "`date +%H:%M:%S` Creating readonly $SNAPTYPE snapshot of '/$LOCALMNT' in '$BACKUPFROM'"
+			btrfs subvolume snapshot -r /$LOCALMNT "$BACKUPFROM" >/dev/null || { echo "`date +%H:%M:%S`  Unable to create $SNAPTYPE snapshot $BACKUPFROM, aborting" >&2; puttosleep; quit 1; }
 		fi
-	else
-		if [  $SNAPSHOTEXISTS -eq 0 ]; then
-			[ -z "$QUIET" ] && echo "`date +%H:%M:%S` Deleting existing $SNAPTYPE snapshot $BACKUPFROM"
-			btrfs subvolume delete "$BACKUPFROM" >/dev/null || { echo "`date +%H:%M:%S`  Unable to remove $SNAPTYPE snapshot $BACKUPFROM, aborting" >&2; puttosleep; quit 1; }
+		[ $LOCALMNT = "root" ] && BACKUPFROM=$BACKUPFROM/home
+		;;
+	none)
+		BACKUPFROM=/home
+		if [ "$LOCALFS" = "btrfs" -a "$LOCALMNT" = "home" ]; then
+			# we must exclude any subvolumes - untested @ 3 Mar 2015
+			RSYNCADDOPTIONS="$RSYNCADDOPTIONS $(btrfs subvolume list $LOCALMNT|awk '{printf "--exclude \"/"; for (F=9; F<NF; F++) printf $F" ";printf $NF"\" "}')"
 		fi
-		[ -z "$QUIET" ] && echo "`date +%H:%M:%S` Creating readonly $SNAPTYPE snapshot of '/$LOCALMNT' in '$BACKUPFROM'"
-		btrfs subvolume snapshot -r /$LOCALMNT "$BACKUPFROM" >/dev/null || { echo "`date +%H:%M:%S`  Unable to create $SNAPTYPE snapshot $BACKUPFROM, aborting" >&2; puttosleep; quit 1; }
-	fi
-	[ $LOCALMNT = "root" ] && BACKUPFROM=$BACKUPFROM/home
-	;;
-none)
-	BACKUPFROM=/home
-	if [ "$LOCALFS" = "btrfs" -a "$LOCALMNT" = "home" ]; then
-		# we must exclude any subvolumes - untested @ 3 Mar 2015
-		RSYNCADDOPTIONS="$RSYNCADDOPTIONS $(btrfs subvolume list $LOCALMNT|awk '{printf "--exclude \"/"; for (F=9; F<NF; F++) printf $F" ";printf $NF"\" "}')"
-	fi
-	;;
-esac
+		;;
+	esac
 
-# do the main backup to hard-linked copy of /home/[folder] i.e. /home/backup/[folder]
-# - that way if it fails part way then no harm is done
+	# do the main backup to hard-linked copy of /home/[folder] i.e. /home/backup/[folder]
+	# - that way if it fails part way then no harm is done
 
-# list of exclusions for /home subfolders that are not homes for local TimeDicer users (BASEID is normally 1)
-find /home -maxdepth 1 -mindepth 1 -type d|xargs -I {} awk -v BASEID=$BASEID -v HOMEF="{}" -F: '( ($6==HOMEF) && ($3!=1000) && ($3>=BASEID*1000) && ($3<(BASEID+1)*1000) ) {FOUND=1} END {if (FOUND!=1) print "- " HOMEF "/"}' /etc/passwd|sed "s@^- /home/@- /@g" >/tmp/backup2_$$_rsyncexcl.txt
-[[ -n $DEBUG ]] && echo "exclude list:" && cat /tmp/backup2_$$_rsyncexcl.txt
-for (( RSYNCLOOP=1; RSYNCLOOP<10; RSYNCLOOP++ )) do
-  # in case the dest machine has gone to sleep...
-  if [ $RSYNCLOOP -gt 1 ]; then
-    test_and_wake_dest || { RSYNCLOOP=10; break; }
-  fi
-  [ -z "$QUIET" ] && echo -en "`date +%H:%M:%S` Start mirroring source /home (i.e. $BACKUPFROM)\n         to destination /home (i.e. /home/backup) - loop $RSYNCLOOP"
-  RSYNCERR=99
-  if [ -n "$TEST" ]; then
-    RSYNCERR=0
-		[[ -n $DEBUG ]] && echo "Test mode: rsync --dry-run --rsh=\"ssh -p$SSHPORT\" $RSYNCADDOPTIONS --delete-after --link-dest=/home --exclude-from=/tmp/backup2_$$_rsyncexcl.txt -vv --info=skip4 $BACKUPFROM/ root@$DESTIP:/home/backup" && rsync --dry-run --rsh="ssh -p$SSHPORT" $RSYNCADDOPTIONS --delete-after --link-dest=/home --exclude-from=/tmp/backup2_$$_rsyncexcl.txt -vv --info=skip4 $BACKUPFROM/ root@$DESTIP:/home/backup 2>&1|tee "/tmp/backup2_rsync.txt"
-  elif [ -z "$VERBOSE" ]; then
-    # AX options removed 7Oct10 because of rsync error messages:
-    #   rsync: get_acl: sys_acl_get_file("path/filename", ACL_TYPE_ACCESS): No such file or directory (2)
-    #   rsync: get_xattr_names: llistxattr("path/filename",1024) failed: No such file or directory (2)
-    # backs up to /home/backup using --link-dest=/home
+	# list of exclusions for /home subfolders that are not homes for local TimeDicer users (BASEID is normally 1)
+	find /home -maxdepth 1 -mindepth 1 -type d|xargs -I {} awk -v BASEID=$BASEID -v HOMEF="{}" -F: '( ($6==HOMEF) && ($3!=1000) && ($3>=BASEID*1000) && ($3<(BASEID+1)*1000) ) {FOUND=1} END {if (FOUND!=1) print "- " HOMEF "/"}' /etc/passwd|sed "s@^- /home/@- /@g" >/tmp/backup2_$$_rsyncexcl.txt
+	[[ -n $DEBUG ]] && echo "exclude list:" && cat /tmp/backup2_$$_rsyncexcl.txt
+	for (( RSYNCLOOP=1; RSYNCLOOP<10; RSYNCLOOP++ )) do
+  	# in case the dest machine has gone to sleep...
+  	if [ $RSYNCLOOP -gt 1 ]; then
+    	test_and_wake_dest || { RSYNCLOOP=10; break; }
+  	fi
+  	[ -z "$QUIET" ] && echo -en "`date +%H:%M:%S` Start mirroring source /home (i.e. $BACKUPFROM)\n         to destination /home (i.e. /home/backup) - loop $RSYNCLOOP"
+  	RSYNCERR=99
+  	if [ -n "$TEST" ]; then
+    	RSYNCERR=0
+			[[ -n $DEBUG ]] && echo "Test mode: rsync --dry-run --rsh=\"ssh -p$SSHPORT\" $RSYNCADDOPTIONS --delete-after --link-dest=/home --exclude-from=/tmp/backup2_$$_rsyncexcl.txt -vv --info=skip4 $BACKUPFROM/ root@$DESTIP:/home/backup" && rsync --dry-run --rsh="ssh -p$SSHPORT" $RSYNCADDOPTIONS --delete-after --link-dest=/home --exclude-from=/tmp/backup2_$$_rsyncexcl.txt -vv --info=skip4 $BACKUPFROM/ root@$DESTIP:/home/backup 2>&1|tee "/tmp/backup2_rsync.txt"
+  	elif [ -z "$VERBOSE" ]; then
+    	# AX options removed 7Oct10 because of rsync error messages:
+    	#   rsync: get_acl: sys_acl_get_file("path/filename", ACL_TYPE_ACCESS): No such file or directory (2)
+    	#   rsync: get_xattr_names: llistxattr("path/filename",1024) failed: No such file or directory (2)
+    	# backs up to /home/backup using --link-dest=/home
 
-		# don't use --delete-during because it may make changes to dest before completion of backup operation,
-		# whereas we want to delay any changes (using --link-dest) until backup has completed successfully
-		# however this requires us to use --delete-after which is slower...
-    rsync --rsh="ssh -p$SSHPORT" $RSYNCADDOPTIONS --delete-after --link-dest=/home --exclude-from=/tmp/backup2_$$_rsyncexcl.txt $BACKUPFROM/ root@$DESTIP:/home/backup 1>"/tmp/backup2_rsync.txt" 2>&1
-    RSYNCERR=$?
-  else	# verbose or active
-    echo -e "\nStarted transfer,File length bytes,Transferred bytes,Path and filename"
-    #the commented-out version provides neat formatting but you don't see the progress bar until 100% complete
-    #(which is kinda self-defeating)
-    #rsync --partial -AX $RSYNCADDOPTIONS --link-dest=/home --exclude=lost+found/*** --exclude=backup/*** --exclude=backup.old/*** /mnt/${LOCALMNT}backup/ root@$DESTIP:/home/backup 2>>/tmp/backup2_rsync.txt|sed 's/^[0-9/]*/ /;s/:/ /'
-    #this is less neat but gives progress bar:
-    rsync --rsh="ssh -p$SSHPORT" $RSYNCADDOPTIONS --delete-after --link-dest=/home --exclude-from=/tmp/backup2_$$_rsyncexcl.txt $BACKUPFROM/ root@$DESTIP:/home/backup 2>&1|tee "/tmp/backup2_rsync.txt"
-    RSYNCERR="${PIPESTATUS[0]}"
-  fi
-  [ $RSYNCERR -eq 0 -o $RSYNCLOOP -gt 9 ] && break
-  echo " - problem $RSYNCERR:"; sed '/known hosts\./d;s/^/   /' "/tmp/backup2_rsync.txt"
-	if [[ $SNAPTYPE == "lvm" ]]; then
-		lvs $BACKUPFROM >/dev/null 2>&1 || { echo "`date +%H:%M:%S` Source snapshot collapsed"; RSYNCLOOP=10; break; }
-	fi
-  if [ $RSYNCERR -eq 30 -a -n "$COMPRESS" ]; then
-    RSYNCADDOPTIONS="$(echo "$RSYNCADDOPTIONS"|sed 's/-z //')"
-    unset COMPRESS
-    echo "`date +%H:%M:%S` Retrying without compression"
-    [ -n "$DEBUG" ] && echo "RSYNCADDOPTIONS: '$RSYNCADDOPTIONS'"
-	elif [ $(grep -c "No space left on device .28." /tmp/backup2_rsync.txt) -gt 0 ]; then
-    echo "`date +%H:%M:%S` Out of space on destination"
-		RSYNCLOOP=10; break
-  else
-    sleep 60s # if there was a problem with rsync, wait before trying again
-  fi
-done
-[ -n "$DEBUG" ] && echo "Debug mode: stage 77"
-[ -n "$TEST" ] && echo "       Test mode: /home mirroring did not really happen!">"/tmp/backup2_rsync.txt"
-[ -n "$DEBUG" ] && echo "Debug mode: stage 79"
-if [ -z "$QUIET" ] && [ -n "$TEST" -o -z "$VERBOSE" ]; then
-  [ $RSYNCLOOP -lt 10 ] && echo " - ok:" || echo " - failed:"
-  [ -n "$DEBUG" ] && echo "Debug mode: stage 80"
-  # show tidied-up rsync output
-  [ -s "/tmp/backup2_rsync.txt" ] && sed '/^$/d;/known hosts\./d;s/^/  /' "/tmp/backup2_rsync.txt"
-fi
-[ -n "$DEBUG" ] && echo "Debug mode: stage 81"
-if [ -z "$TEST" ]; then
-  TRANSFERRED_FILE_SIZE=`sed -n '/Total transferred file size/s/.*: \(.*\) .*/\1/p' "/tmp/backup2_rsync.txt"`
-  if [ -n "$TRANSFERRED_FILE_SIZE" ]; then
-    rm -f /tmp/backup2_rsync.txt	# not needed any more
-    TRANSFERRED_FILE_UNIT=${TRANSFERRED_FILE_SIZE:$((${#TRANSFERRED_FILE_SIZE}-1))}
-    TRANSFERRED_FILE_SIZE=${TRANSFERRED_FILE_SIZE:0:$((${#TRANSFERRED_FILE_SIZE}-1))}
-    MULTIPLICAND="1"
-    [ "$TRANSFERRED_FILE_UNIT" = "T" ] && MULTIPLICAND="1099511627776"
-    [ "$TRANSFERRED_FILE_UNIT" = "G" ] && MULTIPLICAND="1073741824"
-    [ "$TRANSFERRED_FILE_UNIT" = "M" ] && MULTIPLICAND="1048576"
-    [ "$TRANSFERRED_FILE_UNIT" = "K" ] && MULTIPLICAND="1024"
-    [ -n "$DEBUG" ] && echo "TRANSFERRED_FILE_SIZE: $TRANSFERRED_FILE_SIZE, TRANSFERRED_FILE_UNIT: $TRANSFERRED_FILE_UNIT, MULTIPLICAND: $MULTIPLICAND"
-    # record the transferred file size in bytes, if we have something valid
-    [[ -n $TRANSFERRED_FILE_SIZE ]] && echo "$TRANSFERRED_FILE_SIZE $MULTIPLICAND `date +"%Y-%m-%d %H:%M:%S"`" | awk '{if ($1*$2 > 0) printf "%16.0f",$1*$2; print " "$3,$4}'>>"/var/log/$THIS-tfs.log"
-  else
-    echo "Warning: unable to retrieve 'Total transferred file size' from /tmp/backup2_rsync.txt - file retained"
-  fi
-fi
-[ -n "$DEBUG" ] && echo "Debug mode: stage 83"
-
-
-# remove the snapshot
-case $SNAPTYPE in
-lvm)
-	[ -z "$QUIET" ] && echo -en `date +%H:%M:%S` Umounting and removing source LVM snapshot ${LOCALDEVICE}backup at /mnt/${LOCALMNT}backup
-	for (( C=1; C<=4; C++ )) do
-		umount ${LOCALDEVICE}backup && break
-		# sometimes the umount needs a gap of time before it will work
-		sleep 20
+			# don't use --delete-during because it may make changes to dest before completion of backup operation,
+			# whereas we want to delay any changes (using --link-dest) until backup has completed successfully
+			# however this requires us to use --delete-after which is slower...
+    	rsync --rsh="ssh -p$SSHPORT" $RSYNCADDOPTIONS --delete-after --link-dest=/home --exclude-from=/tmp/backup2_$$_rsyncexcl.txt $BACKUPFROM/ root@$DESTIP:/home/backup 1>"/tmp/backup2_rsync.txt" 2>&1
+    	RSYNCERR=$?
+  	else	# verbose or active
+    	echo -e "\nStarted transfer,File length bytes,Transferred bytes,Path and filename"
+    	#the commented-out version provides neat formatting but you don't see the progress bar until 100% complete
+    	#(which is kinda self-defeating)
+    	#rsync --partial -AX $RSYNCADDOPTIONS --link-dest=/home --exclude=lost+found/*** --exclude=backup/*** --exclude=backup.old/*** /mnt/${LOCALMNT}backup/ root@$DESTIP:/home/backup 2>>/tmp/backup2_rsync.txt|sed 's/^[0-9/]*/ /;s/:/ /'
+    	#this is less neat but gives progress bar:
+    	rsync --rsh="ssh -p$SSHPORT" $RSYNCADDOPTIONS --delete-after --link-dest=/home --exclude-from=/tmp/backup2_$$_rsyncexcl.txt $BACKUPFROM/ root@$DESTIP:/home/backup 2>&1|tee "/tmp/backup2_rsync.txt"
+    	RSYNCERR="${PIPESTATUS[0]}"
+  	fi
+  	[ $RSYNCERR -eq 0 -o $RSYNCLOOP -gt 9 ] && break
+  	echo " - problem $RSYNCERR:"; sed '/known hosts\./d;s/^/   /' "/tmp/backup2_rsync.txt"
+		if [[ $SNAPTYPE == "lvm" ]]; then
+			lvs $BACKUPFROM >/dev/null 2>&1 || { echo "`date +%H:%M:%S` Source snapshot collapsed"; RSYNCLOOP=10; break; }
+		fi
+  	if [ $RSYNCERR -eq 30 -a -n "$COMPRESS" ]; then
+    	RSYNCADDOPTIONS="$(echo "$RSYNCADDOPTIONS"|sed 's/-z //')"
+    	unset COMPRESS
+    	echo "`date +%H:%M:%S` Retrying without compression"
+    	[ -n "$DEBUG" ] && echo "RSYNCADDOPTIONS: '$RSYNCADDOPTIONS'"
+		elif [ $(grep -c "No space left on device .28." /tmp/backup2_rsync.txt) -gt 0 ]; then
+    	echo "`date +%H:%M:%S` Out of space on destination"
+			RSYNCLOOP=10; break
+  	else
+    	sleep 60s # if there was a problem with rsync, wait before trying again
+  	fi
 	done
-	if [ "$C" -gt 4 ]; then
-		UMOUNTERR=1
-		echo -e "`date +%H:%M:%S` Unable to umount ${LOCALDEVICE}backup"
-		echo -e "\nTo fix, do:\msudo umount ${LOCALDEVICE}backup\nsudo lvremove -f ${LOCALDEVICE}backup\nsudo rm -rf /mnt/${LOCALMNT}backup"
-	else
-		lvremove -f ${LOCALDEVICE}backup>/dev/null
-		if [ $? -gt 0 ]; then
-			UMOUNTERR=1
-			echo -e "\n`date +%H:%M:%S` Unable to lvremove -f ${LOCALDEVICE}backup"
-		else
-			rm -r /mnt/${LOCALMNT}backup || { UMOUNTERR=1; echo -e "\n`date +%H:%M:%S` Unable to rm -r /mnt/${LOCALMNT}backup"; }
-		fi
+	[ -n "$DEBUG" ] && echo "Debug mode: stage 77"
+	[ -n "$TEST" ] && echo "       Test mode: /home mirroring did not really happen!">"/tmp/backup2_rsync.txt"
+	[ -n "$DEBUG" ] && echo "Debug mode: stage 79"
+	if [ -z "$QUIET" ] && [ -n "$TEST" -o -z "$VERBOSE" ]; then
+  	[ $RSYNCLOOP -lt 10 ] && echo " - ok:" || echo " - failed:"
+  	[ -n "$DEBUG" ] && echo "Debug mode: stage 80"
+  	# show tidied-up rsync output
+  	[ -s "/tmp/backup2_rsync.txt" ] && sed '/^$/d;/known hosts\./d;s/^/  /' "/tmp/backup2_rsync.txt"
 	fi
-	[ -z "$QUIET$UMOUNTERR" ] && echo " - ok" || { [ -z "$QUIET" ] && echo " - FAIL"; }
-	;;
-btrfs)
-	[ -z "$QUIET" ] && echo "`date +%H:%M:%S` Deleting $SNAPTYPE snapshot '$BACKUPFROM'"
-	btrfs subvolume delete "$BACKUPFROM" >/dev/null || { echo "`date +%H:%M:%S` Unable to remove btrfs snapshot $BACKUPFROM, aborting" >&2; puttosleep; quit 1; }
-	;;
-esac
+	[ -n "$DEBUG" ] && echo "Debug mode: stage 81"
+	if [ -z "$TEST" ]; then
+  	TRANSFERRED_FILE_SIZE=`sed -n '/Total transferred file size/s/.*: \(.*\) .*/\1/p' "/tmp/backup2_rsync.txt"`
+  	if [ -n "$TRANSFERRED_FILE_SIZE" ]; then
+    	rm -f /tmp/backup2_rsync.txt	# not needed any more
+    	TRANSFERRED_FILE_UNIT=${TRANSFERRED_FILE_SIZE:$((${#TRANSFERRED_FILE_SIZE}-1))}
+    	TRANSFERRED_FILE_SIZE=${TRANSFERRED_FILE_SIZE:0:$((${#TRANSFERRED_FILE_SIZE}-1))}
+    	MULTIPLICAND="1"
+    	[ "$TRANSFERRED_FILE_UNIT" = "T" ] && MULTIPLICAND="1099511627776"
+    	[ "$TRANSFERRED_FILE_UNIT" = "G" ] && MULTIPLICAND="1073741824"
+    	[ "$TRANSFERRED_FILE_UNIT" = "M" ] && MULTIPLICAND="1048576"
+    	[ "$TRANSFERRED_FILE_UNIT" = "K" ] && MULTIPLICAND="1024"
+    	[ -n "$DEBUG" ] && echo "TRANSFERRED_FILE_SIZE: $TRANSFERRED_FILE_SIZE, TRANSFERRED_FILE_UNIT: $TRANSFERRED_FILE_UNIT, MULTIPLICAND: $MULTIPLICAND"
+    	# record the transferred file size in bytes, if we have something valid
+    	[[ -n $TRANSFERRED_FILE_SIZE ]] && echo "$TRANSFERRED_FILE_SIZE $MULTIPLICAND `date +"%Y-%m-%d %H:%M:%S"`" | awk '{if ($1*$2 > 0) printf "%16.0f",$1*$2; print " "$3,$4}'>>"/var/log/$THIS-tfs.log"
+  	else
+    	echo "Warning: unable to retrieve 'Total transferred file size' from /tmp/backup2_rsync.txt - file retained"
+  	fi
+	fi
+	[ -n "$DEBUG" ] && echo "Debug mode: stage 83"
 
-fi # matches 'if [ -n "$FAST" ]; then	# XXY: matches fi below' above
+	# remove the snapshot
+	case $SNAPTYPE in
+	lvm)
+		[ -z "$QUIET" ] && echo -en `date +%H:%M:%S` Umounting and removing source LVM snapshot ${LOCALDEVICE}backup at /mnt/${LOCALMNT}backup
+		for (( C=1; C<=4; C++ )) do
+			umount ${LOCALDEVICE}backup && break
+			# sometimes the umount needs a gap of time before it will work
+			sleep 20
+		done
+		if [ "$C" -gt 4 ]; then
+			UMOUNTERR=1
+			echo -e "`date +%H:%M:%S` Unable to umount ${LOCALDEVICE}backup"
+			echo -e "\nTo fix, do:\msudo umount ${LOCALDEVICE}backup\nsudo lvremove -f ${LOCALDEVICE}backup\nsudo rm -rf /mnt/${LOCALMNT}backup"
+		else
+			lvremove -f ${LOCALDEVICE}backup>/dev/null
+			if [ $? -gt 0 ]; then
+				UMOUNTERR=1
+				echo -e "\n`date +%H:%M:%S` Unable to lvremove -f ${LOCALDEVICE}backup"
+			else
+				rm -r /mnt/${LOCALMNT}backup || { UMOUNTERR=1; echo -e "\n`date +%H:%M:%S` Unable to rm -r /mnt/${LOCALMNT}backup"; }
+			fi
+		fi
+		[ -z "$QUIET$UMOUNTERR" ] && echo " - ok" || { [ -z "$QUIET" ] && echo " - FAIL"; }
+		;;
+	btrfs)
+		[ -z "$QUIET" ] && echo "`date +%H:%M:%S` Deleting $SNAPTYPE snapshot '$BACKUPFROM'"
+		btrfs subvolume delete "$BACKUPFROM" >/dev/null || { echo "`date +%H:%M:%S` Unable to remove btrfs snapshot $BACKUPFROM, aborting" >&2; puttosleep; quit 1; }
+		;;
+	esac
+fi # matches XXY above
+[[ -n $DEBUG ]] && echo "Debug mode: stage 84"
 
 if [ -z "$FAST" -a -z "$TEST" -a "$RSYNCERR" -eq 0 ]; then
  [ -z "$QUIET" ] && echo -e `date +%H:%M:%S`" Mirrored $BACKUPFROM ok, now replacing old data with new at destination:"
@@ -1166,7 +1160,7 @@ else
     echo "         - so no changes were made to /home at destination $DESTIP"
   fi
 fi
-
+[[ -n $DEBUG ]] && echo "Debug: stage 87"
 [ -z "$DEBUG" ] && rm -f /tmp/backup2_*
 #closing message
 END=`date +"%d/%m/%Y %H:%M:%S"`
