@@ -31,4 +31,4 @@ users = app.userdb.list()
 for user in users:
 	email = app.userdb.get_email(user)
 	home = app.userdb.get_user_root(user)
-	password = 
+	print "%s, %s, %s" %(user, email, home)
