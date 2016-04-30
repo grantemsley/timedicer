@@ -32,7 +32,7 @@
 # another gotcha (bug) existed in rsync --link-dest prior to 3.1.1 which could lead to wasted disk space on the
 # destination - this is a reason to use Ubuntu 14.10+ as distro, or rebuild rsync from source - see
 # http://unix.stackexchange.com/questions/193308/how-to-get-rsync-to-link-identical-files-with-link-dest-option-if-an-old-file
-VERSION="6.0427 [27 Apr 2016]"
+VERSION="6.0430 [30 Apr 2016]"
 
 function quit () {
   # exit with code $1, but first restart any suspended verification sessions
@@ -306,6 +306,7 @@ if [ -n "$CHANGELOG" ]; then
 	# changelog
 	[ -n "$HELP" ] && echo -e "Changelog:"
 	echo "\
+6.0430 [30 Apr 2016] - few small code tweaks
 6.0427 [27 Apr 2016] - make source/destination user-checking compatible with \
 TimeDicer Server Pool concept, remove redundant -b option
 6.0426 [26 Apr 2016] - update destination rdiffweb database in consistent way \
@@ -739,10 +740,10 @@ diff --suppress-common-lines /tmp/backup2_users1.txt /tmp/backup2_users2.txt|awk
 while read PREEXISTINGUSER; do
 	#pick up name[0], uid[1] and gid[2] of the user on destination
 	RUSER=( $(grep "^$PREEXISTINGUSER" /tmp/backup2_users2.txt | awk -F: '{print $1,$2,$3}' ) )
-	[[ -n $DEBUG ]] && echo "Checking user on destination (user uid gid): ${RUSER[@]}"
+	[[ -n $DEBUG ]] && echo "Checking unmatched user on destination (user uid gid): ${RUSER[@]}"
 	if [[ ${RUSER[1]} -le $(($BASEID*1000)) || ${RUSER[1]} -gt $(($BASEID*1000+999)) ]]; then
 		# this user is in a different BaseID, this is ok as long as the name doesn't conflict
-		grep "^${RUSER[0]}:" /tmp/backup2_users1.txt >/dev/null && echo "Fatal Error: user ${RUSER[0]} exists on both source and destination but with different uids" >&2 && let ERRED++
+		grep "^${RUSER[0]}:" /tmp/backup2_users1.txt >/dev/null && { echo "Fatal Error: user ${RUSER[0]} exists on both source and destination but with different uids" >&2 && let ERRED++; } || [[ -n $DEBUG ]] && echo " - ok (user has different BaseID and name does not conflict)"
 	else
 		let ERRED++
 		echo "Fatal Error: user ${RUSER[0]} already exists on destination, uid ${RUSER[1]}, but is not matched on source" >&2
@@ -813,10 +814,12 @@ done
 for FILE in /etc/crontab /etc/rc.local; do
 	if [ -f "$FILE" -a -z "$TEST" ]; then
 		[ -z "$QUIET" ] && echo "`date +%H:%M:%S` Copying $FILE to /opt on source"
-		cp -a "$FILE" /opt
+		cp -a "$FILE" "/opt/$(basename $FILE).$BASEID"
 	fi
 done
-#copy /opt/ and rdw.db (no LVM snapshot as these will be quick anyway)
+[ -n "$DEBUG" ] && echo "Debug mode: stage 25"
+
+#copy /opt/ and rdiffweb user data (no LVM snapshot as these will be quick anyway)
 if [[ ${REMOTEDATA[9]} == "y" ]]; then
 	SOURCES="/opt/ /tmp/backup2_syncusers.sql"
 	# list of only local TimeDicer users (BASEID is normally 1), excludes primary user (uid 1000)
@@ -824,6 +827,7 @@ if [[ ${REMOTEDATA[9]} == "y" ]]; then
 	# Remove temporary file if it already exists
 	rm -f /tmp/backup2_syncusers.sql
 	# Build SQL file that creates missing users, or updates their information if the username already exists
+	# - kudos Grant Emsley Apr 2016
 	for i in "${LOCALUSERS[@]}"; do
 		USERINFO=(`sqlite3 /etc/rdiffweb/rdw.db <<EOF
 .mode tcl
@@ -839,8 +843,10 @@ EOF
 	done
 else
 	SOURCES="/opt/"
-	echo -e "Warning: /etc/rdiffweb directory not found on destination\n         /etc/rdiffweb/rdw.db will not be copied!"
+	echo -e "Warning: /etc/rdiffweb directory not found on destination\n         rdiffweb user data will not be copied!"
 fi
+[ -n "$DEBUG" ] && echo "Debug mode: stage 28"
+
 for SRC in $SOURCES; do
 	if [ -e "$SRC" ]; then
 		[ -z "$QUIET" ] && echo -en "`date +%H:%M:%S` Mirroring $SRC"
@@ -860,11 +866,13 @@ for SRC in $SOURCES; do
 		echo "`date +%H:%M:%S` Mirroring $SRC - skipped [not found on source]"
 	fi
 done
+[ -n "$DEBUG" ] && echo "Debug mode: stage 31"
+
 if [[ -z $TEST && ${REMOTEDATA[9]} == "y" && -s /tmp/backup2_syncusers.sql ]]; then
-	echo "`date +%H:%M:%S` Updating rdiffweb database on destination"
+	echo "`date +%H:%M:%S` Updating rdiffweb user database on destination"
 	ssh $SSHOPTS root@$DESTIP 'sqlite3 /etc/rdiffweb/rdw.db </tmp/backup2_syncusers.sql'
 fi
-[[ -n $DEBUG ]] && echo "Debug: stage 73"
+[[ -n $DEBUG ]] && echo "Debug: stage 34"
 if [ -n "$FAST" ]; then	# XXY: matches fi below
 	RSYNCERR=0
 else
@@ -878,7 +886,7 @@ else
  	exit $ERRNO
 	' 2>/dev/null
 	ERRNO=$?
-	[[ -n $DEBUG ]] && echo "Debug: stage 74"
+	[[ -n $DEBUG ]] && echo "Debug: stage 37"
 
 	# if an error has been recorded on the remote machine, or ssh failed, abort
 	if [ $ERRNO -ne 0 ]; then
@@ -887,7 +895,7 @@ else
  	puttosleep
  	quit 1
 	fi
-	[[ -n $DEBUG ]] && echo "Debug: stage 75"
+	[[ -n $DEBUG ]] && echo "Debug: stage 40"
 
 	# Set up the source (snapshot)
 	case $SNAPTYPE in
@@ -939,20 +947,23 @@ else
 			fi
 		fi
 		if [ -z "$USEEXISTINGSNAPSHOT" ]; then
-			[ -z "$QUIET" ] && echo -n "`date +%H:%M:%S` Making LVM snapshot of source $LOCALDEVICE at ${LOCALDEVICE}backup"
+			[ -z "$QUIET" ] && echo -n "`date +%H:%M:%S` Creating mountpoint at /mnt/${LOCALMNT}backup"
+			mkdir -p /mnt/${LOCALMNT}backup 2>/dev/null || { echo -e "\ncouldn't create mountpoint, aborting..." >&2; puttosleep; quit 1; }
 			# we will use 80% of free VG space for the snapshot
 			FREEG=$(vgs --noheadings --units=b -o vg_free|awk -F"[ B]" '{print int(0.8*$(NF-1)/1024^3)}')
+			[[ $FREEG -ge 1 ]] || { echo -e "\ninsufficient space available for LVM snapshot, aborting..." >&2; puttosleep; quit 1; }
+			[[ $FREEG -ge 5 ]] || echo -e "\n         Warning: only ${FREE}G space available for LVM snapshot"
+			[ -z "$QUIET" ] && echo -en " - ok\n`date +%H:%M:%S` Making ${FREEG}G LVM snapshot of source $LOCALDEVICE at ${LOCALDEVICE}backup"
 			[[ -n $DEBUG ]] && echo -e "\nDoing: lvcreate -p r -L ${FREEG}G -s -n ${LOCALDEVICE##*/}backup $LOCALDEVICE"
-			lvcreate -p r -L ${FREEG}G -s -n ${LOCALDEVICE##*/}backup $LOCALDEVICE>/dev/null||{ echo -e "\ncouldn't create logical volume ${LOCALDEVICE}backup, aborting...">&2; puttosleep; quit 1; }
-			[ -z "$QUIET" ] && echo -en " - ok\n`date +%H:%M:%S` Mounting source LVM snapshot at /mnt/${LOCALMNT}backup"
+			lvcreate -p r -L ${FREEG}G -s -n ${LOCALDEVICE##*/}backup $LOCALDEVICE>/dev/null || { echo -e "\ncouldn't create logical volume ${LOCALDEVICE}backup, aborting...">&2; puttosleep; quit 1; }
+			[ -z "$QUIET" ] && echo -en " - ok\n`date +%H:%M:%S` Mounting LVM snapshot"
+			[[ -n $DEBUG ]] && echo -e "\nDoing: mount -o ro ${LOCALDEVICE}backup /mnt/${LOCALMNT}backup"
 			for ((LOOP=1; LOOP<15; LOOP++)); do
-				mkdir -p /mnt/${LOCALMNT}backup 2>/dev/null && break
+				mount -o ro ${LOCALDEVICE}backup /mnt/${LOCALMNT}backup && break
 				[[ -z $QUIET ]] && echo -n "."
 				sleep 3s # wait for snapshot to exist, might loop to prevent error 'special device ... does not exist' when mounting
 			done
-			[[ $LOOP -lt 15 ]] || { echo -e "\ncouldn't create mountpoint, aborting...">&2; puttosleep; quit 1; }
-			[[ -n $DEBUG ]] && echo -e "\nDoing: mount -o ro ${LOCALDEVICE}backup /mnt/${LOCALMNT}backup"
-			mount -o ro ${LOCALDEVICE}backup /mnt/${LOCALMNT}backup||{ echo -e "\ncouldn't mount ${LOCALDEVICE}backup at mountpoint, aborting...">&2; puttosleep; quit 1; }
+			[[ $LOOP -lt 15 ]] || { echo -e "\ncouldn't mount ${LOCALDEVICE}backup at mountpoint, aborting...">&2; puttosleep; quit 1; }
 			[ -z "$QUIET" ] && echo " - ok"
 		fi
 		if [ "$LOCALMNT" = "home" ]; then
